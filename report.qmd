@@ -1,0 +1,443 @@
+---
+title: "COVID-19 Data Analysis"
+subtitle: "Testing Rates and Positive Cases: January–June 2020"
+author: "Daniel Wilkinson"
+date: today
+format:
+  pdf:
+    documentclass: article
+    papersize: a4
+    geometry:
+      - top=25mm
+      - bottom=25mm
+      - left=25mm
+      - right=25mm
+    fontsize: 11pt
+    linestretch: 1.4
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    colorlinks: true
+    linkcolor: "blue"
+    urlcolor: "blue"
+    highlight-style: github
+    code-overflow: wrap
+    fig-pos: "H"
+    include-in-header:
+      text: |
+        \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{
+          breaklines,
+          breaksymbolleft={},
+          commandchars=\\\{\}
+        }
+        \usepackage{float}
+        \usepackage{booktabs}
+        \usepackage{microtype}
+editor: visual
+execute:
+  warning: false
+  message: false
+  error: false
+---
+
+\newpage
+
+# Introduction
+
+This report analyses data on COVID-19 testing rates and positive test results between 20 January 2020 and 1 June 2020. The data source is provided by Dataquest, derived from Kaggle:
+
+<https://dq-content.s3.amazonaws.com/505/covid19.csv>
+
+**Research question:** Which countries have reported the highest number of positive cases in relation to the number of tests conducted?
+
+# Methods and Limitations
+
+## Scope and Sample
+
+The analysis is restricted to the top ten countries by total testing volume. This is not a random or representative sample. It excludes countries with high death tolls but low testing capacity (e.g. Brazil, Mexico), which limits the generalisability of conclusions about which countries were most affected globally.
+
+## Positive-to-Tested Ratio
+
+A high ratio of positive to tested cases does not straightforwardly indicate a higher infection rate. It more likely reflects a narrower testing strategy. For example, restricting tests to symptomatic or hospitalised patients. Comparisons of this ratio across countries should be interpreted as reflecting testing policy as much as disease burden.
+
+## Population Adjustment
+
+Raw counts are not directly comparable across countries with very different population sizes. Sections 7–9 adjust for population by expressing metrics as a percentage of each country's population. Population figures were provided by Dataquest and should be treated as estimates; no source date is given.
+
+## Missing Data
+
+Several countries, including the US and UK, reported zero for `active` and `hospitalizedCurr`. These are non-reporting zeros rather than true zeros. This affects the aggregated impact rankings in section 9, where countries that reported all metrics will appear artificially more affected than those that did not.
+
+## Aggregated Rankings
+
+Summing ranks across metrics (section 9) treats each metric as equally important and of comparable scale, which is not statistically justified. Results should be interpreted as a rough ordinal guide rather than a precise impact score. Countries with complete reporting will score higher regardless of true disease burden.
+
+# Understanding the Data
+
+## Setup
+
+```{r set-up}
+library(tidyverse)
+library(skimr)
+library(readr)
+library(ggthemes)
+library(zoo)
+```
+
+## Loading the Dataset
+
+```{r load-data}
+url <- "https://dq-content.s3.amazonaws.com/505/covid19.csv"
+covid_df <- read.csv(url)
+```
+
+## Initial Exploration
+
+The following steps examine the dimensions, structure, and data types of the dataset, and flag any quality issues.
+
+```{r explore-data}
+dim(covid_df)
+skim(covid_df)
+vector_cols <- colnames(covid_df)
+head(covid_df)
+```
+
+## Issues Identified
+
+Review of the raw data surfaces the following issues requiring attention:
+
+- **Date format:** `date` is stored as a character string and should be converted to a date type for time-series analysis.
+- **Mixed geographic granularity:** `Province_State` conflates US states with country-level entries (e.g. "All States", "China") in the same column.
+- **Inconsistent naming:** `hospitalizedCurr` deviates from the underscore convention used by other columns.
+- **Negative values:** Some rows contain negative values for `daily_tested`, `daily_positive`, and `active`, indicating a data quality issue. These rows should be removed.
+
+# Data Cleaning and Preparation
+
+## Isolating National-Level Rows
+
+Rows are filtered to retain only entries where `Province_State == "All States"`, giving a consistent national-level view. The `Province_State` column is then dropped as it is no longer informative.
+
+```{r filter-all-states}
+covid_df_all_states <- covid_df %>%
+  filter(Province_State == "All States") %>%
+  select(-Province_State)
+
+head(covid_df_all_states)
+```
+
+## Selecting Relevant Columns
+
+Daily metrics are separated from cumulative metrics to allow focused analysis.
+
+```{r select-columns}
+daily_cols <- c(
+  "Date", "Country_Region", "active",
+  "hospitalizedCurr", "daily_tested", "daily_positive"
+)
+
+covid_df_all_states_daily <- covid_df_all_states %>%
+  select(all_of(daily_cols))
+
+covid_df_all_states_cumulative <- covid_df_all_states %>%
+  select(-all_of(daily_cols))
+```
+
+# Identifying Countries with the Highest Number of Deaths
+
+```{r deaths}
+covid_df_all_states_cumulative_max <- covid_df_all_states_cumulative %>%
+  group_by(Continent_Name, Two_Letter_Country_Code) %>%
+  summarize(max_deaths = max(death)) %>%
+  filter(max_deaths > 0)
+
+ggplot(covid_df_all_states_cumulative_max,
+       aes(x = reorder(Two_Letter_Country_Code, -max_deaths),
+           y = max_deaths,
+           fill = Continent_Name)) +
+  geom_col() +
+  labs(x = "Country Code", y = "Maximum Deaths", fill = "Continent") +
+  theme_tufte() +
+  coord_flip()
+
+death_top_3 <- covid_df_all_states_cumulative_max %>%
+  ungroup() %>%
+  slice_max(max_deaths, n = 3) %>%
+  pull(Two_Letter_Country_Code)
+```
+
+The US had, by far, the greatest maximum deaths, followed by Italy and Great Britain. The continents are affected in the following order: North America, Europe, Asia, Oceania. These are absolute values, not normalised to the respective countries' total populations.
+
+# Identifying the Top Ten Countries by Testing Volume
+
+Countries are ranked by total tests conducted over the period. The top ten are extracted for further analysis.
+
+```{r top-ten}
+covid_df_all_states_daily_sum <- covid_df_all_states_daily %>%
+  group_by(Country_Region) %>%
+  summarize(
+    tested       = sum(daily_tested),
+    positive     = sum(daily_positive),
+    active       = sum(active),
+    hospitalized = sum(hospitalizedCurr)
+  ) %>%
+  arrange(desc(tested))
+
+covid_top_10 <- head(covid_df_all_states_daily_sum, 10)
+covid_top_10
+```
+
+# Positive-to-Tested Ratio Analysis
+
+## Computing the Ratio
+
+The ratio of positive cases to tests conducted is calculated for each of the top ten countries to identify which had the highest relative burden.
+
+```{r ratio-analysis}
+countries          <- covid_top_10$Country_Region
+tested_cases       <- setNames(covid_top_10$tested,        countries)
+positive_cases     <- setNames(covid_top_10$positive,      countries)
+active_cases       <- setNames(covid_top_10$active,        countries)
+hospitalized_cases <- setNames(covid_top_10$hospitalized,  countries)
+
+# Compute ratio and store as named vector for use in answer_list
+positive_tested_top_3 <- covid_top_10 %>%
+  mutate(positive_tested_ratio = positive / tested) %>%
+  slice_max(positive_tested_ratio, n = 3) %>%
+  select(Country_Region, positive_tested_ratio) %>%
+  deframe()
+
+# Display as formatted table
+positive_tested_top_3 %>%
+  as_tibble(rownames = "Country") %>%
+  knitr::kable(digits = 3, col.names = c("Country", "Positive / Tested Ratio"))
+```
+
+## Summary for Top Three Countries
+
+Key statistics for the three countries with the highest positive-to-tested ratio are collated below.
+
+```{r summary-matrix}
+united_kingdom <- c(0.11, 1473672,  166909,       0, 0)
+united_states  <- c(0.10, 17282363, 1877179,       0, 0)
+turkey         <- c(0.08, 2031192,  163941,  2980960, 0)
+
+covid_mat_top3 <- rbind(united_kingdom, united_states, turkey)
+colnames(covid_mat_top3) <- c("Ratio", "Tested", "Positive", "Active", "Hospitalized")
+covid_mat_top3
+```
+
+# Scaling of Data to Population Level
+
+```{r scaling}
+covid_mat <- cbind(tested_cases, positive_cases, active_cases, hospitalized_cases)
+
+population <- c(31002651, 145934462, 60461826, 1380004385, 84339067,
+                37742154, 67886011,  25499884,  32971854,   37846611)
+
+covid_mat <- covid_mat * 100 / population
+covid_mat
+```
+
+# Ranking Countries Related to Their Population
+
+```{r ranking}
+tested_cases_rank       <- rank(covid_mat[, "tested_cases"])
+positive_cases_rank     <- rank(covid_mat[, "positive_cases"])
+active_cases_rank       <- rank(covid_mat[, "active_cases"])
+hospitalized_cases_rank <- rank(covid_mat[, "hospitalized_cases"])
+
+covid_mat_rank <- cbind(
+  tested_cases_rank, positive_cases_rank,
+  active_cases_rank, hospitalized_cases_rank
+)
+covid_mat_rank
+```
+
+# Identifying Affected Countries Related to Their Population
+
+**Question 1:** Which countries have made the best effort in terms of the number of tests conducted related to their population?
+
+**Question 2:** Which countries were ultimately the most and least affected related to their population?
+
+```{r affected}
+# Remove tested column; sum remaining metrics per country
+covid_mat_rank_impact <- covid_mat_rank[, -1]
+aggregated_rank <- rowSums(covid_mat_rank_impact)
+aggregated_rank
+
+# Q1: top 3 testers per capita — highest rank = most tests relative to population
+best_effort_tested_cased_top_3 <- names(sort(tested_cases_rank, decreasing = TRUE)[1:3])
+
+# Q2: most and least affected by aggregated impact score
+most_affected_country  <- names(which.max(aggregated_rank))
+least_affected_country <- names(which.min(aggregated_rank))
+```
+
+# Time Series Analysis
+
+```{r ratio-timeseries}
+# 7-day rolling average to smooth noise
+
+Sys.setlocale("LC_TIME", "English")
+
+covid_ratio_time <- covid_df_all_states_daily %>%
+  filter(Country_Region %in% countries) %>%
+  mutate(Date = as.Date(Date),
+         ratio = daily_positive / daily_tested) %>%
+  filter(!is.na(ratio), is.finite(ratio), daily_tested > 0) %>%
+  group_by(Country_Region) %>%
+  arrange(Date) %>%
+  mutate(ratio_7day = rollmean(ratio, k = 7, fill = NA, align = "right")) %>%
+  ungroup()
+
+ggplot(covid_ratio_time, aes(x = Date, y = ratio_7day, colour = Country_Region)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 0.6)) +  # cap at 60% to remove UK spike
+  scale_colour_brewer(palette = "Paired") +
+  labs(
+    title = "7-Day Rolling Average: Positive-to-Tested Ratio",
+    subtitle = "Top 10 countries by testing volume, January–June 2020",
+    x = NULL,
+    y = "Positive / Tested",
+    colour = NULL
+  ) +
+  theme_tufte() +
+  theme(legend.position = "bottom")
+```
+The time-series chart reveals several patterns obscured by the aggregate analysis.
+
+**The UK stands out as a data quality story.**
+The spike to ~42% in mid-March then sudden drop is almost certainly not real. It reflects the UK's early testing strategy being restricted to hospitalised patients, making the ratio artificially high. When testing expanded, the ratio collapsed immediately.
+
+**The US and Turkey follow a similar arc.** 
+Both peak around late March to early April at ~20%, then decline steadily as testing capacity expanded — the classic pattern of a country catching up with an outbreak.
+
+**Italy peaks earliest and falls fastest**, consistent with it being the first 
+European country seriously hit and the first to scale testing in response.
+
+**Australia and Russia are the most interesting comparison.** Australia stays near 
+0% throughout, reflecting aggressive early containment. Russia's later rise suggests 
+the outbreak arrived later but testing did not keep pace.
+
+Across all countries, ratios rise then converge toward low values by June. The 
+aggregate positive-to-tested ratios reported in Section 6 therefore largely capture 
+peak testing constraints rather than total disease burden, reinforcing the caveat 
+raised in Section 2.
+
+
+# Putting It All Together
+
+```{r build-list}
+#| output: false
+question_list <- list(
+  "Which countries have had the highest number of deaths due to COVID-19?",
+  "Which countries have had the highest number of positive cases against the number of tests?",
+  "Which countries have made the best effort in terms of the number of COVID-19 tests conducted related to their population?",
+  "Which countries were ultimately the most and least affected related to their population?"
+)
+
+answer_list <- list(
+  "Death"                                                = death_top_3,
+  "Positive tested cases"                                = positive_tested_top_3,
+  "The best effort in test related to the population"    = best_effort_tested_cased_top_3,
+  "The most affected country related to its population"  = most_affected_country,
+  "The least affected country related to its population" = least_affected_country
+)
+answer_list
+
+dataframe_list <- list(
+  covid_df,
+  covid_df_all_states,
+  covid_df_all_states_cumulative,
+  covid_df_all_states_daily
+)
+
+matrix_list <- list(covid_mat, covid_mat_rank)
+
+vector_list <- list(vector_cols, population, countries)
+
+data_structure_list <- list(
+  "dataframe" = dataframe_list,
+  "matrix"    = matrix_list,
+  "vector"    = vector_list
+)
+
+covid_analysis_list <- list(question_list, answer_list, data_structure_list)
+```
+
+# Summary
+
+```{r final-summary}
+covid_analysis_list[[2]]
+```
+
+**Answer:** The United Kingdom, United States, and Turkey recorded the highest ratios of positive COVID-19 cases relative to tests conducted among the top ten most-tested countries in the period studied, with ratios of approximately 0.11, 0.10, and 0.08 respectively.
+
+\newpage
+
+# Additional Notes: Concepts and Trade-offs
+
+## Named Vectors vs. Dataframes
+
+The exercise uses named vectors as an intermediate step, extracting columns, naming them with country labels, and computing ratios element-wise. This is idiomatic base R but the tidyverse offers a more robust alternative.
+
+### The base R approach
+
+`setNames()` is a concise way to assign names inline rather than as a separate step:
+
+``` r
+# These two are equivalent
+eg_tested <- setNames(covid_top_10$tested, covid_top_10$Country_Region)
+
+eg_tested <- covid_top_10$tested
+names(eg_tested) <- covid_top_10$Country_Region
+```
+
+### The tidyverse approach
+
+Rather than extracting columns into separate vectors, the ratio can be computed directly on the dataframe using `mutate()`, keeping country names attached to the data throughout and avoiding several single-use intermediate objects. `deframe()` from the tibble package then converts a two-column dataframe into a named vector, with the first column as names and the second as values.
+
+------------------------------------------------------------------------
+
+## The `select()` Pattern: Positive vs. Negative Selection
+
+Two complementary patterns appear in this analysis:
+
+``` r
+# Keep only these columns
+covid_df_all_states_daily <- covid_df_all_states %>%
+  select(all_of(daily_cols))
+
+# Keep everything except these columns
+covid_df_all_states_cumulative <- covid_df_all_states %>%
+  select(-all_of(daily_cols))
+```
+
+The `-` prefix means "exclude". Both use `all_of()`, the safe way to pass a character vector of column names into `select()` — without it, tidyselect raises a warning in recent versions of dplyr.
+
+------------------------------------------------------------------------
+
+## Why `filter()` Before `select(-Province_State)`
+
+After filtering to `Province_State == "All States"`, every remaining row has the same value in that column, so it carries no information and is dropped. Chaining both steps in a single pipe is cleaner than `df$col <- NULL`, which mutates the object in place rather than producing a new one.
+
+------------------------------------------------------------------------
+
+## List Structure as a Data Container
+
+Nested lists bundle heterogeneous outputs — strings, named vectors, dataframes, matrices — into a single object. In a larger project this might be returned from a function or saved with `saveRDS()`. Elements are accessed by position (`[[1]]`, `[[2]]`) or by name if the list is named.
+
+------------------------------------------------------------------------
+
+## `skim()` vs. `glimpse()` vs. `str()`
+
+| Function | Best for | PDF output |
+|------------------------|------------------------|------------------------|
+| `str()` | Compact type and value preview, base R | Can overflow narrow pages |
+| `glimpse()` | Tidyverse equivalent of `str()` | Wraps cleanly |
+| `skim()` | Full summary statistics per column | Renders as a tidy table |
+
+For PDF reports, `glimpse()` is generally preferable to `str()` for structural inspection, and `skim()` is the best choice when you also want completeness rates and distributional summaries in a single call.
