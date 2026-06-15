@@ -90,6 +90,9 @@ library(zoo)
 ```{r load-data}
 url <- "https://dq-content.s3.amazonaws.com/505/covid19.csv"
 covid_df <- read.csv(url)
+# make two letter code and country_region variables consistent
+covid_df <- covid_df %>%
+  mutate(Two_Letter_Country_Code = recode(Two_Letter_Country_Code, "GB" = "UK"))
 ```
 
 ## Initial Exploration
@@ -291,12 +294,11 @@ covid_ratio_time <- covid_df_all_states_daily %>%
   mutate(ratio_7day = rollmean(ratio, k = 7, fill = NA, align = "right")) %>%
   ungroup()
 
-ggplot(covid_ratio_time, aes(x = Date, y = ratio_7day, colour = Country_Region)) +
+ggplot(covid_ratio_time, aes(x = Date, y = ratio_7day)) +
   geom_line(linewidth = 0.8, na.rm = TRUE) +
   scale_x_date(date_breaks = "1 month", date_labels = "%b") +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1),
                      limits = c(0, 0.6)) +  # cap at 60% to remove UK spike
-  scale_colour_brewer(palette = "Paired") +
   labs(
     title = "7-Day Rolling Average: Positive-to-Tested Ratio",
     subtitle = "Top 10 countries by testing volume, January–June 2020",
@@ -305,7 +307,8 @@ ggplot(covid_ratio_time, aes(x = Date, y = ratio_7day, colour = Country_Region))
     colour = NULL
   ) +
   theme_tufte() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom") +
+  facet_wrap(~Country_Region)
 ```
 The time-series chart reveals several patterns obscured by the aggregate analysis.
 
@@ -346,7 +349,7 @@ answer_list <- list(
   "The most affected country related to its population"  = most_affected_country,
   "The least affected country related to its population" = least_affected_country
 )
-answer_list
+
 
 dataframe_list <- list(
   covid_df,
@@ -366,19 +369,43 @@ data_structure_list <- list(
 )
 
 covid_analysis_list <- list(question_list, answer_list, data_structure_list)
+
+summary_table <- tibble(
+  Question = c(
+    "Highest deaths",
+    "Highest positive-to-tested ratio",
+    "Best testing effort per capita",
+    "Most affected country (per capita)",
+    "Least affected country (per capita)"
+  ),
+  Answer = c(
+    paste(death_top_3, collapse = ", "),
+    paste(names(positive_tested_top_3), collapse = ", "),
+    paste(best_effort_tested_cased_top_3, collapse = ", "),
+    most_affected_country,
+    least_affected_country
+  )
+)
+
+knitr::kable(summary_table, col.names = c("Question", "Answer"))
 ```
 
 # Summary
 
 ```{r final-summary}
-covid_analysis_list[[2]]
+knitr::kable(summary_table, col.names = c("Question", "Answer"))
 ```
 
-**Answer:** The United Kingdom, United States, and Turkey recorded the highest ratios of positive COVID-19 cases relative to tests conducted among the top ten most-tested countries in the period studied, with ratios of approximately 0.11, 0.10, and 0.08 respectively.
+**Answer:** 
+
+- The United Kingdom, United States, and Turkey recorded the highest ratios of positive COVID-19 cases relative to tests conducted among the top ten most-tested countries in the period studied, with ratios of approximately 0.11, 0.10, and 0.08 respectively. However, the time series analysis shows that those ratios are largely an artefact of testing strategy.
+
+- The US had both the highest deaths and a high positive ratio, suggesting systemic undertesting. Italy had the second highest deaths and peaks earliest in the time series, supporting the interpretation than early undertesting drove high rates.
+
 
 \newpage
 
-# Additional Notes: Concepts and Trade-offs
+# Technical Appendix: Concepts and Trade-offs
 
 ## Named Vectors vs. Dataframes
 
